@@ -4,7 +4,7 @@ from PIL import Image
 import io
 import re
 
-from paste_component import paste_image
+from streamlit_paste_button import paste_image_button as pbutton
 
 # ── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -426,13 +426,13 @@ with col_paste:
         '<div class="input-card">',
         unsafe_allow_html=True,
     )
-    st.markdown(
-        '<div style="font-size:0.8rem; color:#8b949e; margin-bottom:6px;">'
-        "Or paste from clipboard"
-        "</div>",
-        unsafe_allow_html=True,
+    paste_result = pbutton(
+        label="Paste from Clipboard",
+        background_color="#161B22",
+        hover_background_color="#21262d",
+        text_color="#E6EDF3",
+        key="paste",
     )
-    pasted_data = paste_image(key="paste")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -443,11 +443,10 @@ image_source = None
 if uploaded_file is not None:
     image_bytes = uploaded_file.read()
     image_source = "upload"
-elif pasted_data:
-    import base64
-
-    header, encoded = pasted_data.split(",", 1)
-    image_bytes = base64.b64decode(encoded)
+elif paste_result and paste_result.image_data is not None:
+    buf = io.BytesIO()
+    paste_result.image_data.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
     image_source = "paste"
 
 

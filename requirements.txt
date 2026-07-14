@@ -1,3 +1,4 @@
 streamlit>=1.30.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
+streamlit-paste-button>=0.1.2
