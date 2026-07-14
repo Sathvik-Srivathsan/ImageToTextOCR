@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <script src="https://unpkg.com/streamlit-component-lib@2.0.0/dist/index.js"></script>
+  <script src="https://unpkg.com/streamlit-component-lib/dist/index.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -97,7 +97,7 @@
         filenameLabel.textContent = file.name || 'clipboard-image.png';
         previewContainer.style.display = 'block';
         pasteZone.style.display = 'none';
-        StreamlitComponentAPI.setComponentValue(currentValue);
+        Streamlit.setComponentValue(currentValue);
       };
       reader.readAsDataURL(file);
     }
@@ -145,7 +145,7 @@
     // Focus paste zone so Ctrl+V works immediately
     pasteZone.focus();
 
-    StreamlitComponentAPI.setFrameHeight(120);
+    Streamlit.setFrameHeight(120);
   </script>
 </body>
 </html>
