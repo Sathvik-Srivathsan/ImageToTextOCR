@@ -8,8 +8,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: huggingface/hub-sync@v0.1.0
         with:
-          github_repo_id: Sathvik-Srivathsan/ImageToTextOCR
-          huggingface_repo_id: ${{ vars.HF_USERNAME }}/ImageToTextOCR
-          hf_token: ${{ secrets.HF_TOKEN }}
+          fetch-depth: 0
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git remote add hf "https://xathvik:${HF_TOKEN}@huggingface.co/spaces/xathvik/ImageToTextOCR"
+          git push hf main --force
