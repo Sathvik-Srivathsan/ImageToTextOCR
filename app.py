@@ -1,7 +1,7 @@
 import streamlit as st
 from PIL import Image
-import cv2
 import numpy as np
+import scipy.ndimage
 import io
 import re
 
@@ -202,35 +202,30 @@ def init_ocr(lang_code):
 
 
 # ── Image preprocessing ──────────────────────────────────────────────────────
-def preprocess_image(img_bgr):
+def preprocess_image(img_rgb):
     """Grayscale -> denoise -> adaptive threshold -> deskew."""
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray = np.array(img_rgb.convert("L"))
 
-    denoised = cv2.fastNlMeansDenoising(gray, h=10)
+    denoised = scipy.ndimage.median_filter(gray, size=3).astype(np.float64)
 
-    thresh = cv2.adaptiveThreshold(
-        denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 11, 2,
-    )
+    block_size = 11
+    local_mean = scipy.ndimage.uniform_filter(denoised, size=block_size)
+    thresh = np.where(denoised > local_mean - 2, 255, 0).astype(np.uint8)
 
     coords = np.column_stack(np.where(thresh > 0))
     if len(coords) > 0:
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45:
-            angle = -(90 + angle)
-        else:
-            angle = -angle
+        mean = np.mean(coords, axis=0)
+        centered = coords - mean
+        cov = np.cov(centered.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
         if abs(angle) > 0.5:
-            h, w = thresh.shape
-            center = (w // 2, h // 2)
-            M = cv2.getRotationMatrix2D(center, angle, 1.0)
-            thresh = cv2.warpAffine(
-                thresh, M, (w, h),
-                flags=cv2.INTER_CUBIC,
-                borderMode=cv2.BORDER_REPLICATE,
-            )
+            thresh = scipy.ndimage.rotate(
+                thresh, angle, reshape=False, order=3,
+                mode="constant", cval=0,
+            ).astype(np.uint8)
 
-    return cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+    return thresh
 
 
 # ── Line / paragraph grouping ────────────────────────────────────────────────
@@ -423,9 +418,7 @@ if image_bytes:
     st.image(img, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Convert to OpenCV BGR for preprocessing
-    img_cv2 = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    preprocessed = preprocess_image(img_cv2)
+    preprocessed = preprocess_image(img)
 
     # Run PaddleOCR on full-resolution preprocessed image
     with st.spinner("Running OCR..."):
