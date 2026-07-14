@@ -1,170 +1,10 @@
-import streamlit as st
-from PIL import Image
 import cv2
 import numpy as np
-import io
 import re
-
+import gradio as gr
+from PIL import Image
 from paddleocr import PaddleOCR
-from streamlit_paste_button import paste_image_button as pbutton
 
-# ── Page Config ──────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Image Text Reader",
-    page_icon="\u270d",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ── Custom CSS ───────────────────────────────────────────────────────────────
-st.markdown(
-    """
-    <style>
-    /* ── Global ───────────────────────────────────────────── */
-    .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
-
-    /* ── Sidebar ──────────────────────────────────────────── */
-    section[data-testid="stSidebar"] {
-        background-color: #161B22;
-        border-right: 1px solid #21262d;
-    }
-    section[data-testid="stSidebar"] .stMarkdown h3 {
-        color: #7C9BF5;
-        font-size: 0.85rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-top: 1.2rem;
-        margin-bottom: 0.4rem;
-    }
-
-    /* ── Section headers ──────────────────────────────────── */
-    .section-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 0.6rem;
-    }
-    .section-header .bar {
-        width: 3px;
-        height: 20px;
-        background: #7C9BF5;
-        border-radius: 2px;
-    }
-    .section-header p {
-        font-size: 0.82rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #8b949e;
-        margin: 0;
-    }
-
-    /* ── Input card ───────────────────────────────────────── */
-    .input-card {
-        background: #161B22;
-        border: 1px solid #21262d;
-        border-radius: 10px;
-        padding: 1.2rem;
-        margin-bottom: 1rem;
-    }
-
-    /* ── Output card ──────────────────────────────────────── */
-    .output-card {
-        background: #0d1117;
-        border: 1px solid #21262d;
-        border-radius: 10px;
-        padding: 1rem;
-        margin-top: 0.5rem;
-    }
-    .output-text {
-        font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-        font-size: 0.85rem;
-        line-height: 1.65;
-        color: #E6EDF3;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        max-height: 500px;
-        overflow-y: auto;
-        padding: 1rem;
-        background: #0E1117;
-        border: 1px solid #21262d;
-        border-radius: 6px;
-    }
-
-    /* ── Stats bar ────────────────────────────────────────── */
-    .stats-bar {
-        display: flex;
-        gap: 24px;
-        padding: 0.5rem 0;
-        font-size: 0.78rem;
-        color: #8b949e;
-    }
-    .stats-bar .stat-val {
-        color: #7C9BF5;
-        font-weight: 600;
-    }
-
-    /* ── Copy button ──────────────────────────────────────── */
-    .copy-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 14px;
-        background: #21262d;
-        border: 1px solid #30363d;
-        border-radius: 6px;
-        color: #E6EDF3;
-        font-size: 0.8rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 0.15s;
-        margin-top: 8px;
-    }
-    .copy-btn:hover { background: #30363d; border-color: #7C9BF5; }
-
-    /* ── Image preview ────────────────────────────────────── */
-    .img-preview {
-        border: 1px solid #21262d;
-        border-radius: 8px;
-        overflow: hidden;
-        margin-bottom: 1rem;
-    }
-    .img-preview img {
-        width: 100%;
-        max-height: 320px;
-        object-fit: contain;
-        display: block;
-        background: #0d1117;
-    }
-
-    /* ── Success / warning boxes ──────────────────────────── */
-    .info-box {
-        background: #161B22;
-        border-left: 3px solid #7C9BF5;
-        padding: 0.6rem 1rem;
-        border-radius: 0 6px 6px 0;
-        font-size: 0.82rem;
-        color: #8b949e;
-        margin: 0.5rem 0;
-    }
-    .warn-box {
-        background: #1c1a0f;
-        border-left: 3px solid #d29922;
-        padding: 0.6rem 1rem;
-        border-radius: 0 6px 6px 0;
-        font-size: 0.82rem;
-        color: #d29922;
-        margin: 0.5rem 0;
-    }
-
-    /* ── Hide Streamlit branding ──────────────────────────── */
-    #MainMenu { visibility: hidden; }
-    footer { visibility: hidden; }
-    header { visibility: hidden; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ── Language Map (PaddleOCR 2.x codes) ──────────────────────────────────────
 LANGUAGES = {
@@ -184,21 +24,17 @@ LANGUAGES = {
     "Vietnamese": "vi",
 }
 
-# ── Session State ─────────────────────────────────────────────────────────────
-if "ocr_results" not in st.session_state:
-    st.session_state.ocr_results = {}
-if "ocr_words" not in st.session_state:
-    st.session_state.ocr_words = []
-if "image_dims" not in st.session_state:
-    st.session_state.image_dims = None
-if "active_mode" not in st.session_state:
-    st.session_state.active_mode = "Preserve Formatting"
-
 
 # ── Cached OCR engine ────────────────────────────────────────────────────────
-@st.cache_resource
+_ocr_cache = {}
+
+
 def init_ocr(lang_code):
-    return PaddleOCR(use_angle_cls=True, lang=lang_code, show_log=False)
+    if lang_code not in _ocr_cache:
+        _ocr_cache[lang_code] = PaddleOCR(
+            use_angle_cls=True, lang=lang_code, show_log=False
+        )
+    return _ocr_cache[lang_code]
 
 
 # ── Image preprocessing ──────────────────────────────────────────────────────
@@ -321,116 +157,24 @@ def reconstruct_clean(words):
     return raw.strip()
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### \u2699\ufe0f Settings")
-
-    st.markdown("#### OCR Language")
-    selected_langs = st.multiselect(
-        "Languages",
-        options=list(LANGUAGES.keys()),
-        default=["English"],
-        label_visibility="collapsed",
-    )
-    lang_code = LANGUAGES[selected_langs[0]] if selected_langs else "en"
-
-    st.markdown("#### Confidence Threshold")
-    conf_threshold = st.slider(
-        "Minimum confidence (%)",
-        min_value=0,
-        max_value=100,
-        value=20,
-        step=5,
-        help="Lines below this confidence score are discarded as noise.",
-    )
-
-    st.markdown("---")
-    st.markdown(
-        '<div style="font-size:0.72rem; color:#484f58; line-height:1.4;">'
-        "UTF-8 byte-for-byte preservation<br>"
-        "Every recognized character is kept intact"
-        "</div>",
-        unsafe_allow_html=True,
-    )
+# ── State for mode switching ─────────────────────────────────────────────────
+_ocr_results = {"Preserve Formatting": "", "Text + Whitespace Only": "", "Clean Text": ""}
 
 
-# ── Main Layout ───────────────────────────────────────────────────────────────
-st.markdown(
-    '<div class="section-header"><div class="bar"></div><p>Input</p></div>',
-    unsafe_allow_html=True,
-)
+# ── Main OCR function ────────────────────────────────────────────────────────
+def run_ocr(img, lang, confidence_threshold):
+    if img is None:
+        _ocr_results.update({"Preserve Formatting": "", "Text + Whitespace Only": "", "Clean Text": ""})
+        return "", "Upload an image or paste one from your clipboard."
 
-col_upload, col_paste = st.columns(2)
-
-with col_upload:
-    st.markdown(
-        '<div class="input-card">',
-        unsafe_allow_html=True,
-    )
-    uploaded_file = st.file_uploader(
-        "Upload image",
-        type=["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"],
-        label_visibility="collapsed",
-        help="Drag and drop or click to browse",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with col_paste:
-    st.markdown(
-        '<div class="input-card">',
-        unsafe_allow_html=True,
-    )
-    paste_result = pbutton(
-        label="Paste from Clipboard",
-        background_color="#161B22",
-        hover_background_color="#21262d",
-        text_color="#E6EDF3",
-        key="paste",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# ── Determine image source ───────────────────────────────────────────────────
-image_bytes = None
-
-if uploaded_file is not None:
-    image_bytes = uploaded_file.read()
-elif paste_result and paste_result.image_data is not None:
-    buf = io.BytesIO()
-    paste_result.image_data.save(buf, format="PNG")
-    image_bytes = buf.getvalue()
-
-
-# ── Process ───────────────────────────────────────────────────────────────────
-if image_bytes:
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    except Exception:
-        st.markdown(
-            '<div class="warn-box">Could not read image. Ensure it is a valid image file.</div>',
-            unsafe_allow_html=True,
-        )
-        st.stop()
-
-    st.session_state.image_dims = img.size
-
-    # Image preview (resized for display only)
-    st.markdown(
-        '<div class="section-header"><div class="bar"></div><p>Preview</p></div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown('<div class="img-preview">', unsafe_allow_html=True)
-    st.image(img, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    lang_code = LANGUAGES.get(lang, "en")
+    conf_threshold = confidence_threshold
 
     preprocessed = preprocess_image(img)
 
-    # Run PaddleOCR on full-resolution preprocessed image
-    with st.spinner("Running OCR..."):
-        ocr_engine = init_ocr(lang_code)
-        result = ocr_engine.ocr(preprocessed, cls=True)
+    ocr_engine = init_ocr(lang_code)
+    result = ocr_engine.ocr(preprocessed, cls=True)
 
-    # Build word list — byte-for-byte preservation of PaddleOCR output
     words = []
     if result and result[0]:
         for line in result[0]:
@@ -453,98 +197,147 @@ if image_bytes:
                     "conf": round(conf * 100, 1),
                 })
 
-    st.session_state.ocr_words = words
+    preserve = reconstruct_preserve(words)
+    whitespace = reconstruct_whitespace_only(words)
+    clean = reconstruct_clean(words)
 
-    # Reconstruct all 3 modes
-    st.session_state.ocr_results = {
-        "Preserve Formatting": reconstruct_preserve(words),
-        "Text + Whitespace Only": reconstruct_whitespace_only(words),
-        "Clean Text": reconstruct_clean(words),
-    }
+    _ocr_results["Preserve Formatting"] = preserve
+    _ocr_results["Text + Whitespace Only"] = whitespace
+    _ocr_results["Clean Text"] = clean
 
-
-# ── Output ────────────────────────────────────────────────────────────────────
-if st.session_state.ocr_results:
-    words = st.session_state.ocr_words
-
-    st.markdown("---")
-    st.markdown(
-        '<div class="section-header"><div class="bar"></div><p>Output</p></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Interactive mode selector
-    active_mode = st.radio(
-        "Output Mode",
-        options=["Preserve Formatting", "Text + Whitespace Only", "Clean Text"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="mode_selector",
-    )
-    st.session_state.active_mode = active_mode
-
-    result = st.session_state.ocr_results[active_mode]
-
-    # Output text
-    escaped_result = (
-        result.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-    st.markdown(
-        f'<div class="output-card"><div class="output-text">{escaped_result}</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Copy button
-    copy_js = f"""
-    <script>
-    function copyOutput() {{
-        const text = {repr(result)};
-        navigator.clipboard.writeText(text).then(function() {{
-            const btn = document.getElementById('copy-btn');
-            btn.innerHTML = '&#10003; Copied';
-            btn.style.color = '#3fb950';
-            btn.style.borderColor = '#3fb950';
-            setTimeout(() => {{
-                btn.innerHTML = '&#128203; Copy to Clipboard';
-                btn.style.color = '#E6EDF3';
-                btn.style.borderColor = '#30363d';
-            }}, 2000);
-        }});
-    }}
-    </script>
-    <button class="copy-btn" id="copy-btn" onclick="copyOutput()">
-        &#128203; Copy to Clipboard
-    </button>
-    """
-    st.components.v1.html(copy_js, height=50)
-
-    # Stats
-    char_count = len(result)
-    word_count = len(result.split())
-    line_count = len(result.split("\n"))
+    char_count = len(preserve)
+    word_count = len(preserve.split())
+    line_count = len(preserve.split("\n"))
     avg_conf = (
         round(sum(w["conf"] for w in words) / len(words), 1) if words else 0
     )
-
-    st.markdown(
-        f'<div class="stats-bar">'
-        f'<span>Chars: <span class="stat-val">{char_count:,}</span></span>'
-        f'<span>Words: <span class="stat-val">{word_count:,}</span></span>'
-        f'<span>Lines: <span class="stat-val">{line_count:,}</span></span>'
-        f"<span>Avg Confidence: <span class=\"stat-val\">{avg_conf}%</span></span>"
-        f"<span>Lines Detected: <span class=\"stat-val\">{len(words):,}</span></span>"
-        f"</div>",
-        unsafe_allow_html=True,
+    stats = (
+        f"**Chars:** {char_count:,} | **Words:** {word_count:,} | "
+        f"**Lines:** {line_count:,} | **Avg Confidence:** {avg_conf}% | "
+        f"**Detections:** {len(words):,}"
     )
 
-else:
-    # Landing state
-    st.markdown(
-        '<div class="info-box">'
-        "Upload an image or paste one from your clipboard to begin. "
-        "The OCR engine will extract all text with full UTF-8 character preservation."
-        "</div>",
-        unsafe_allow_html=True,
+    return preserve, stats
+
+
+def switch_mode(mode):
+    return _ocr_results.get(mode, "")
+
+
+# ── Custom CSS ───────────────────────────────────────────────────────────────
+CUSTOM_CSS = """
+#title { text-align: center; margin-bottom: 0.2rem; }
+#subtitle { text-align: center; color: #8b949e !important; font-size: 0.85rem; margin-top: 0; margin-bottom: 0.5rem; }
+footer { display: none !important; }
+"""
+
+
+# ── Theme ────────────────────────────────────────────────────────────────────
+theme = gr.themes.Base(
+    primary_hue="indigo",
+    secondary_hue="blue",
+    neutral_hue="slate",
+    font=gr.themes.GoogleFont("Inter"),
+).set(
+    body_background_fill="#0E1117",
+    body_background_fill_dark="#0E1117",
+    block_background_fill="#161B22",
+    block_background_fill_dark="#161B22",
+    block_border_color="#21262d",
+    block_border_color_dark="#21262d",
+    block_label_text_color="#8b949e",
+    block_label_text_color_dark="#8b949e",
+    block_title_text_color="#E6EDF3",
+    block_title_text_color_dark="#E6EDF3",
+    input_background_fill="#0d1117",
+    input_background_fill_dark="#0d1117",
+    input_border_color="#21262d",
+    input_border_color_dark="#21262d",
+    button_primary_background_fill="#7C9BF5",
+    button_primary_background_fill_dark="#7C9BF5",
+    button_primary_text_color="#0E1117",
+    button_primary_text_color_dark="#0E1117",
+    button_secondary_background_fill="#21262d",
+    button_secondary_background_fill_dark="#21262d",
+    button_secondary_text_color="#E6EDF3",
+    button_secondary_text_color_dark="#E6EDF3",
+    text_color="#E6EDF3",
+    text_color_dark="#E6EDF3",
+    slider_color="#7C9BF5",
+    slider_color_dark="#7C9BF5",
+)
+
+
+# ── Build Gradio UI ──────────────────────────────────────────────────────────
+with gr.Blocks(theme=theme, css=CUSTOM_CSS, title="Image Text Reader") as demo:
+    gr.Markdown("# ✍️ Image Text Reader", elem_id="title")
+    gr.Markdown(
+        "Upload an image or paste from clipboard. OCR extracts all text with full UTF-8 character preservation.",
+        elem_id="subtitle",
     )
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            gr.Markdown("### ⚙️ Settings")
+            lang_dropdown = gr.Dropdown(
+                choices=list(LANGUAGES.keys()),
+                value="English",
+                label="OCR Language",
+            )
+            conf_slider = gr.Slider(
+                minimum=0,
+                maximum=100,
+                value=20,
+                step=5,
+                label="Minimum Confidence (%)",
+                info="Lines below this score are discarded as noise.",
+            )
+
+        with gr.Column(scale=2):
+            gr.Markdown("### 📥 Input")
+            img_input = gr.Image(
+                type="pil",
+                label="Upload image (or paste from clipboard)",
+                height=320,
+            )
+
+            gr.Markdown("### 📤 Output")
+            mode_radio = gr.Radio(
+                choices=["Preserve Formatting", "Text + Whitespace Only", "Clean Text"],
+                value="Preserve Formatting",
+                label="Output Mode",
+            )
+            output_text = gr.Textbox(
+                label="Extracted Text",
+                lines=16,
+                show_copy_button=True,
+                monospace=True,
+                interactive=False,
+            )
+            stats_text = gr.Markdown()
+
+    # Event handlers
+    img_input.change(
+        fn=run_ocr,
+        inputs=[img_input, lang_dropdown, conf_slider],
+        outputs=[output_text, stats_text],
+    )
+    lang_dropdown.change(
+        fn=run_ocr,
+        inputs=[img_input, lang_dropdown, conf_slider],
+        outputs=[output_text, stats_text],
+    )
+    conf_slider.release(
+        fn=run_ocr,
+        inputs=[img_input, lang_dropdown, conf_slider],
+        outputs=[output_text, stats_text],
+    )
+    mode_radio.change(
+        fn=switch_mode,
+        inputs=[mode_radio],
+        outputs=[output_text],
+    )
+
+
+if __name__ == "__main__":
+    demo.launch()
