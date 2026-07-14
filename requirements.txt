@@ -1,4 +1,7 @@
 streamlit>=1.30.0
-pytesseract>=0.3.10
+paddleocr>=2.6.0
+paddlepaddle==2.6.2
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
 Pillow>=10.0.0
 streamlit-paste-button>=0.1.2

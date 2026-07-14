@@ -1,9 +1,11 @@
 import streamlit as st
-import pytesseract
 from PIL import Image
+import cv2
+import numpy as np
 import io
 import re
 
+from paddleocr import PaddleOCR
 from streamlit_paste_button import paste_image_button as pbutton
 
 # ── Page Config ──────────────────────────────────────────────────────────────
@@ -102,29 +104,6 @@ st.markdown(
         font-weight: 600;
     }
 
-    /* ── Mode pills ───────────────────────────────────────── */
-    .mode-pills {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 0.5rem;
-    }
-    .mode-pill {
-        padding: 6px 16px;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: 500;
-        cursor: default;
-        border: 1px solid #30363d;
-        background: #161B22;
-        color: #8b949e;
-        transition: all 0.15s;
-    }
-    .mode-pill.active {
-        background: #7C9BF5;
-        color: #0E1117;
-        border-color: #7C9BF5;
-    }
-
     /* ── Copy button ──────────────────────────────────────── */
     .copy-btn {
         display: inline-flex;
@@ -187,23 +166,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Language Map ──────────────────────────────────────────────────────────────
+# ── Language Map (PaddleOCR 2.x codes) ──────────────────────────────────────
 LANGUAGES = {
-    "English": "eng",
-    "Chinese (Simplified)": "chi_sim",
-    "Chinese (Traditional)": "chi_tra",
-    "Japanese": "jpn",
-    "Korean": "kor",
-    "Arabic": "ara",
-    "Hindi": "hin",
-    "German": "deu",
-    "French": "fra",
-    "Spanish": "spa",
-    "Portuguese": "por",
-    "Italian": "ita",
-    "Russian": "rus",
-    "Thai": "tha",
-    "Vietnamese": "vie",
+    "English": "en",
+    "Chinese (Simplified)": "ch",
+    "Chinese (Traditional)": "ch",
+    "Japanese": "japan",
+    "Korean": "korean",
+    "Arabic": "ar",
+    "French": "fr",
+    "German": "german",
+    "Spanish": "es",
+    "Portuguese": "pt",
+    "Italian": "it",
+    "Russian": "ru",
+    "Thai": "th",
+    "Vietnamese": "vi",
 }
 
 # ── Session State ─────────────────────────────────────────────────────────────
@@ -217,6 +195,132 @@ if "active_mode" not in st.session_state:
     st.session_state.active_mode = "Preserve Formatting"
 
 
+# ── Cached OCR engine ────────────────────────────────────────────────────────
+@st.cache_resource
+def init_ocr(lang_code):
+    return PaddleOCR(use_angle_cls=True, lang=lang_code, show_log=False)
+
+
+# ── Image preprocessing ──────────────────────────────────────────────────────
+def preprocess_image(img_bgr):
+    """Grayscale -> denoise -> adaptive threshold -> deskew."""
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+
+    denoised = cv2.fastNlMeansDenoising(gray, h=10)
+
+    thresh = cv2.adaptiveThreshold(
+        denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 11, 2,
+    )
+
+    coords = np.column_stack(np.where(thresh > 0))
+    if len(coords) > 0:
+        angle = cv2.minAreaRect(coords)[-1]
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
+        if abs(angle) > 0.5:
+            h, w = thresh.shape
+            center = (w // 2, h // 2)
+            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+            thresh = cv2.warpAffine(
+                thresh, M, (w, h),
+                flags=cv2.INTER_CUBIC,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+
+    return cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+
+
+# ── Line / paragraph grouping ────────────────────────────────────────────────
+def _group_into_lines(words, y_threshold=None):
+    if not words:
+        return []
+    if y_threshold is None:
+        heights = [w["h"] for w in words if w["h"] > 0]
+        y_threshold = (sorted(heights)[len(heights) // 2] * 0.5) if heights else 10
+
+    sorted_words = sorted(words, key=lambda w: (w["y"], w["x"]))
+    lines = []
+    current_line = [sorted_words[0]]
+
+    for w in sorted_words[1:]:
+        if abs(w["y"] - current_line[0]["y"]) < y_threshold:
+            current_line.append(w)
+        else:
+            lines.append(sorted(current_line, key=lambda x: x["x"]))
+            current_line = [w]
+    lines.append(sorted(current_line, key=lambda x: x["x"]))
+    return lines
+
+
+def _group_into_paragraphs(lines, gap_multiplier=2.0):
+    if not lines:
+        return []
+    heights = [max(w["h"] for w in line) for line in lines]
+    avg_h = sum(heights) / len(heights) if heights else 20
+    gap_threshold = avg_h * gap_multiplier
+
+    paragraphs = [[lines[0]]]
+    for i in range(1, len(lines)):
+        prev_bottom = max(w["y"] + w["h"] for w in lines[i - 1])
+        curr_top = min(w["y"] for w in lines[i])
+        if (curr_top - prev_bottom) > gap_threshold:
+            paragraphs.append([lines[i]])
+        else:
+            paragraphs[-1].append(lines[i])
+    return paragraphs
+
+
+# ── Reconstruction functions ──────────────────────────────────────────────────
+def reconstruct_preserve(words):
+    lines = _group_into_lines(words)
+    paragraphs = _group_into_paragraphs(lines)
+    parts = []
+    for pi, para in enumerate(paragraphs):
+        if pi > 0:
+            parts.append("\n\n")
+        for line in para:
+            line_text = " ".join(w["text"] for w in line)
+            parts.append(line_text)
+            parts.append("\n")
+    return "".join(parts).rstrip("\n")
+
+
+def reconstruct_whitespace_only(words):
+    lines = _group_into_lines(words)
+    paragraphs = _group_into_paragraphs(lines)
+    parts = []
+    for pi, para in enumerate(paragraphs):
+        if pi > 0:
+            parts.append("\n\n")
+        elif parts:
+            parts.append("\n")
+        for line in para:
+            line_text = " ".join(w["text"] for w in line)
+            parts.append(line_text)
+    return "".join(parts)
+
+
+def reconstruct_clean(words):
+    lines = _group_into_lines(words)
+    paragraphs = _group_into_paragraphs(lines)
+    parts = []
+    for pi, para in enumerate(paragraphs):
+        if pi > 0:
+            parts.append("\n\n")
+        elif parts:
+            parts.append("\n")
+        for line in para:
+            line_text = " ".join(w["text"] for w in line)
+            parts.append(line_text.strip())
+    raw = "".join(parts)
+    raw = re.sub(r"[ \t]+", " ", raw)
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
+    return raw.strip()
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### \u2699\ufe0f Settings")
@@ -228,16 +332,16 @@ with st.sidebar:
         default=["English"],
         label_visibility="collapsed",
     )
-    lang_code = "+".join(LANGUAGES[l] for l in selected_langs) if selected_langs else "eng"
+    lang_code = LANGUAGES[selected_langs[0]] if selected_langs else "en"
 
     st.markdown("#### Confidence Threshold")
     conf_threshold = st.slider(
-        "Minimum confidence",
+        "Minimum confidence (%)",
         min_value=0,
         max_value=100,
-        value=30,
+        value=20,
         step=5,
-        help="Words below this Tesseract confidence score are discarded as noise.",
+        help="Lines below this confidence score are discarded as noise.",
     )
 
     st.markdown("---")
@@ -248,145 +352,6 @@ with st.sidebar:
         "</div>",
         unsafe_allow_html=True,
     )
-
-
-# ── Helper: reconstruct text from word list ──────────────────────────────────
-def _median_word_width(words):
-    if not words:
-        return 10
-    widths = [w["w"] for w in words if w["w"] > 0]
-    return sorted(widths)[len(widths) // 2] if widths else 10
-
-
-def _median_line_height(words):
-    if not words:
-        return 10
-    heights = [w["h"] for w in words if w["h"] > 0]
-    return sorted(heights)[len(heights) // 2] if heights else 10
-
-
-def reconstruct_preserve(words):
-    """Reconstruct text faithfully from spatial positions."""
-    if not words:
-        return ""
-
-    med_w = _median_word_width(words)
-    med_h = _median_line_height(words)
-
-    lines_by_key = {}
-    for w in words:
-        key = (w["block"], w["par"], w["line"])
-        lines_by_key.setdefault(key, []).append(w)
-
-    sorted_lines = sorted(lines_by_key.keys())
-    blocks_seen = set()
-    paragraphs_seen = set()
-    result_parts = []
-
-    for line_key in sorted_lines:
-        line_words = sorted(lines_by_key[line_key], key=lambda w: w["x"])
-        block_key = (line_key[0],)
-        par_key = (line_key[0], line_key[1])
-
-        if block_key in blocks_seen:
-            result_parts.append("\n")
-        elif paragraphs_seen and par_key not in paragraphs_seen:
-            result_parts.append("\n")
-        blocks_seen.add(block_key)
-        paragraphs_seen.add(par_key)
-
-        if result_parts and result_parts[-1] != "\n" and result_parts[-1] != "\n\n":
-            result_parts.append("\n")
-
-        prev_end = None
-        prev_y = None
-        for w in line_words:
-            if prev_end is not None:
-                x_gap = w["x"] - prev_end
-                y_gap = abs(w["y"] - prev_y) if prev_y is not None else 0
-
-                if y_gap > med_h * 0.8:
-                    result_parts.append("\n")
-                    x_gap = w["x"]
-
-                if x_gap > med_w * 3.5:
-                    n_tabs = max(1, round(x_gap / (med_w * 4)))
-                    result_parts.append("\t" * n_tabs)
-                elif x_gap > med_w * 0.8:
-                    result_parts.append(" ")
-                else:
-                    result_parts.append("")
-
-            result_parts.append(w["text"])
-            prev_end = w["x"] + w["w"]
-            prev_y = w["y"]
-
-    return "".join(result_parts)
-
-
-def reconstruct_whitespace_only(words):
-    """Keep UTF-8 text + semantic newlines, strip position-based spacing."""
-    if not words:
-        return ""
-
-    lines_by_key = {}
-    for w in words:
-        key = (w["block"], w["par"], w["line"])
-        lines_by_key.setdefault(key, []).append(w)
-
-    sorted_lines = sorted(lines_by_key.keys())
-    paragraphs_seen = set()
-    result_parts = []
-
-    for line_key in sorted_lines:
-        line_words = sorted(lines_by_key[line_key], key=lambda w: w["x"])
-        par_key = (line_key[0], line_key[1])
-
-        if paragraphs_seen and par_key not in paragraphs_seen:
-            result_parts.append("\n\n")
-        elif result_parts:
-            result_parts.append("\n")
-        paragraphs_seen.add(par_key)
-
-        for i, w in enumerate(line_words):
-            if i > 0:
-                result_parts.append(" ")
-            result_parts.append(w["text"])
-
-    return "".join(result_parts)
-
-
-def reconstruct_clean(words):
-    """Single spaces, single newlines, stripped fluff."""
-    if not words:
-        return ""
-
-    lines_by_key = {}
-    for w in words:
-        key = (w["block"], w["par"], w["line"])
-        lines_by_key.setdefault(key, []).append(w)
-
-    sorted_lines = sorted(lines_by_key.keys())
-    paragraphs_seen = set()
-    result_parts = []
-
-    for line_key in sorted_lines:
-        line_words = sorted(lines_by_key[line_key], key=lambda w: w["x"])
-        par_key = (line_key[0], line_key[1])
-
-        if paragraphs_seen and par_key not in paragraphs_seen:
-            result_parts.append("\n\n")
-        elif result_parts:
-            result_parts.append("\n")
-        paragraphs_seen.add(par_key)
-
-        line_text = " ".join(w["text"] for w in line_words)
-        result_parts.append(line_text.strip())
-
-    raw = "".join(result_parts)
-    raw = re.sub(r"[ \t]+", " ", raw)
-    raw = re.sub(r"\n{3,}", "\n\n", raw)
-    return raw.strip()
 
 
 # ── Main Layout ───────────────────────────────────────────────────────────────
@@ -427,22 +392,19 @@ with col_paste:
 
 # ── Determine image source ───────────────────────────────────────────────────
 image_bytes = None
-image_source = None
 
 if uploaded_file is not None:
     image_bytes = uploaded_file.read()
-    image_source = "upload"
 elif paste_result and paste_result.image_data is not None:
     buf = io.BytesIO()
     paste_result.image_data.save(buf, format="PNG")
     image_bytes = buf.getvalue()
-    image_source = "paste"
 
 
 # ── Process ───────────────────────────────────────────────────────────────────
 if image_bytes:
     try:
-        img = Image.open(io.BytesIO(image_bytes))
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except Exception:
         st.markdown(
             '<div class="warn-box">Could not read image. Ensure it is a valid image file.</div>',
@@ -450,58 +412,48 @@ if image_bytes:
         )
         st.stop()
 
-    # Resize large images for faster OCR (cap at 4000px on longest side)
-    max_dim = 4000
-    if max(img.size) > max_dim:
-        ratio = max_dim / max(img.size)
-        new_size = (int(img.width * ratio), int(img.height * ratio))
-        img_display = img.resize(new_size, Image.LANCZOS)
-    else:
-        img_display = img
+    st.session_state.image_dims = img.size
 
-    st.session_state.image_dims = img_display.size
-
-    # Image preview
+    # Image preview (resized for display only)
     st.markdown(
         '<div class="section-header"><div class="bar"></div><p>Preview</p></div>',
         unsafe_allow_html=True,
     )
     st.markdown('<div class="img-preview">', unsafe_allow_html=True)
-    st.image(img_display, use_container_width=True)
+    st.image(img, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Run OCR
-    with st.spinner("Running OCR..."):
-        data = pytesseract.image_to_data(
-            img_display,
-            lang=lang_code,
-            output_type=pytesseract.Output.DICT,
-            config="--psm 3 --oem 3",
-        )
+    # Convert to OpenCV BGR for preprocessing
+    img_cv2 = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    preprocessed = preprocess_image(img_cv2)
 
-    # Build word list — byte-for-byte preservation of Tesseract output
+    # Run PaddleOCR on full-resolution preprocessed image
+    with st.spinner("Running OCR..."):
+        ocr_engine = init_ocr(lang_code)
+        result = ocr_engine.ocr(preprocessed, cls=True)
+
+    # Build word list — byte-for-byte preservation of PaddleOCR output
     words = []
-    for i in range(len(data["text"])):
-        text_val = data["text"][i]
-        if text_val is None:
-            text_val = ""
-        text_val = str(text_val)
-        conf = int(data["conf"][i]) if data["conf"][i] != "-1" else -1
-        if text_val.strip() and conf >= conf_threshold:
-            words.append(
-                {
-                    "text": text_val,
-                    "x": int(data["left"][i]),
-                    "y": int(data["top"][i]),
-                    "w": int(data["width"][i]),
-                    "h": int(data["height"][i]),
-                    "block": int(data["block_num"][i]),
-                    "par": int(data["par_num"][i]),
-                    "line": int(data["line_num"][i]),
-                    "word": int(data["word_num"][i]),
-                    "conf": conf,
-                }
-            )
+    if result and result[0]:
+        for line in result[0]:
+            box = line[0]
+            text = str(line[1][0])
+            conf = float(line[1][1])
+
+            x_min = min(p[0] for p in box)
+            y_min = min(p[1] for p in box)
+            x_max = max(p[0] for p in box)
+            y_max = max(p[1] for p in box)
+
+            if conf * 100 >= conf_threshold:
+                words.append({
+                    "text": text,
+                    "x": int(x_min),
+                    "y": int(y_min),
+                    "w": int(x_max - x_min),
+                    "h": int(y_max - y_min),
+                    "conf": round(conf * 100, 1),
+                })
 
     st.session_state.ocr_words = words
 
@@ -584,7 +536,7 @@ if st.session_state.ocr_results:
         f'<span>Words: <span class="stat-val">{word_count:,}</span></span>'
         f'<span>Lines: <span class="stat-val">{line_count:,}</span></span>'
         f"<span>Avg Confidence: <span class=\"stat-val\">{avg_conf}%</span></span>"
-        f"<span>Words Recognized: <span class=\"stat-val\">{len(words):,}</span></span>"
+        f"<span>Lines Detected: <span class=\"stat-val\">{len(words):,}</span></span>"
         f"</div>",
         unsafe_allow_html=True,
     )
