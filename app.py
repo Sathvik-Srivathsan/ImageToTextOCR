@@ -207,12 +207,14 @@ LANGUAGES = {
 }
 
 # ── Session State ─────────────────────────────────────────────────────────────
-if "ocr_result" not in st.session_state:
-    st.session_state.ocr_result = None
+if "ocr_results" not in st.session_state:
+    st.session_state.ocr_results = {}
 if "ocr_words" not in st.session_state:
     st.session_state.ocr_words = []
 if "image_dims" not in st.session_state:
     st.session_state.image_dims = None
+if "active_mode" not in st.session_state:
+    st.session_state.active_mode = "Preserve Formatting"
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -236,19 +238,6 @@ with st.sidebar:
         value=30,
         step=5,
         help="Words below this Tesseract confidence score are discarded as noise.",
-    )
-
-    st.markdown("#### Output Mode")
-    output_mode = st.radio(
-        "Mode",
-        options=["Preserve Formatting", "Text + Whitespace Only", "Clean Text"],
-        index=0,
-        label_visibility="collapsed",
-        help=(
-            "Preserve Formatting: faithful spatial layout reproduction. "
-            "Text + Whitespace Only: keeps _, -, \\u2014, \\n, \\t but removes position-based spacing. "
-            "Clean Text: single spaces, single newlines, minimal output."
-        ),
     )
 
     st.markdown("---")
@@ -516,20 +505,16 @@ if image_bytes:
 
     st.session_state.ocr_words = words
 
-    # Reconstruct based on mode
-    if output_mode == "Preserve Formatting":
-        result = reconstruct_preserve(words)
-    elif output_mode == "Text + Whitespace Only":
-        result = reconstruct_whitespace_only(words)
-    else:
-        result = reconstruct_clean(words)
-
-    st.session_state.ocr_result = result
+    # Reconstruct all 3 modes
+    st.session_state.ocr_results = {
+        "Preserve Formatting": reconstruct_preserve(words),
+        "Text + Whitespace Only": reconstruct_whitespace_only(words),
+        "Clean Text": reconstruct_clean(words),
+    }
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
-if st.session_state.ocr_result is not None:
-    result = st.session_state.ocr_result
+if st.session_state.ocr_results:
     words = st.session_state.ocr_words
 
     st.markdown("---")
@@ -538,18 +523,17 @@ if st.session_state.ocr_result is not None:
         unsafe_allow_html=True,
     )
 
-    # Mode indicator pill
-    mode_labels = {
-        "Preserve Formatting": "Preserve Formatting",
-        "Text + Whitespace Only": "Text + Whitespace",
-        "Clean Text": "Clean Text",
-    }
-    pills_html = '<div class="mode-pills">'
-    for m in ["Preserve Formatting", "Text + Whitespace Only", "Clean Text"]:
-        active = "active" if output_mode == m else ""
-        pills_html += f'<div class="mode-pill {active}">{mode_labels[m]}</div>'
-    pills_html += "</div>"
-    st.markdown(pills_html, unsafe_allow_html=True)
+    # Interactive mode selector
+    active_mode = st.radio(
+        "Output Mode",
+        options=["Preserve Formatting", "Text + Whitespace Only", "Clean Text"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="mode_selector",
+    )
+    st.session_state.active_mode = active_mode
+
+    result = st.session_state.ocr_results[active_mode]
 
     # Output text
     escaped_result = (
